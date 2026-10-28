@@ -1,8 +1,11 @@
 # Virtual Environment
 venv/
+env/
 
-# Environment Variables
+# Environment Variables and Secrets
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -18,6 +21,6 @@ staticfiles/
 .vscode/
 .idea/
 
-# OS
+# Operating System
 .DS_Store
 Thumbs.db
