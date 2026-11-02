@@ -31,8 +31,18 @@ def add_attendance(request):
         data=request.data, context={"request": request}
     )
     serializer.is_valid(raise_exception=True)
+
+    if not is_management_user(request.user):
+        employee = serializer.validated_data.get("employee")
+        if employee is None or employee.pk != request.user.staff.pk:
+            return Response(
+                {"message": "Permission denied. You can only record attendance for yourself."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
     attendance = serializer.save(company=company)
     return Response(AttendanceSerializer(attendance).data, status=status.HTTP_201_CREATED)
+
 
 
 @api_view(["GET"])
@@ -80,11 +90,15 @@ def update_attendance(request, id):
     if err:
         return err
 
+    if not is_management_user(request.user):
+        return Response({"message": "Permission denied. Management access required."}, status=403)
+
     attendance = get_object_or_404(Attendance, id=id, company=company)
     serializer = AttendanceUpdateSerializer(attendance, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)
-    serializer.save(source="manual")  # mark as manually corrected
+    serializer.save(source="manual")
     return Response(AttendanceSerializer(attendance).data)
+
 
 
 @api_view(["DELETE"])

@@ -158,6 +158,9 @@ def add_staff(request):
     if err:
         return err
 
+    if not is_management_user(request.user):
+        return Response({"message": "Permission denied. Management access required."}, status=403)
+
     serializer = StaffSerializer(data=request.data, context={"company": company})
     if not serializer.is_valid():
         return validation_error(serializer)
@@ -167,6 +170,7 @@ def add_staff(request):
         {"message": "Staff added successfully", "data": StaffSerializer(staff).data},
         status=201,
     )
+
 
 
 @api_view(["GET"])
@@ -213,6 +217,9 @@ def update_staff(request, id):
     if err:
         return err
 
+    if not is_management_user(request.user):
+        return Response({"message": "Permission denied. Management access required."}, status=403)
+
     staff = Staff.objects.filter(company=company, id=id).first()
     if staff is None:
         return Response({"message": "Staff not found"}, status=404)
@@ -225,7 +232,6 @@ def update_staff(request, id):
 
     staff = serializer.save()
     return Response({"message": "Staff updated successfully", "data": StaffSerializer(staff).data})
-
 
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])

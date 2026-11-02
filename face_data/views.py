@@ -3,18 +3,21 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from authentication.utils import company_or_error
+from authentication.utils import company_or_error, is_management_user
 from .models import FaceData
 from .serializers import FaceDataSerializer
 
 
-@api_view(["POST"])
+api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def register_face_embedding(request):
     company, err = company_or_error(request)
     if err:
         return err
 
+    if not is_management_user(request.user):
+        return Response({"message": "Permission denied. Management access required."}, status=403)
+    
     serializer = FaceDataSerializer(
         data=request.data,
         context={"request": request},

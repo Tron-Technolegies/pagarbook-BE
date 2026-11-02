@@ -80,6 +80,9 @@ def update_device(request, id):
     if err:
         return err
 
+    if not is_management_user(request.user):
+        return Response({"message": "Permission denied. Management access required."}, status=403)
+
     device = Device.objects.filter(company=company, id=id).first()
     if device is None:
         return Response({"message": "Device not found"}, status=404)
@@ -90,6 +93,7 @@ def update_device(request, id):
 
     device = serializer.save()
     return Response({"message": "Device updated successfully", "data": DeviceSerializer(device).data})
+
 
 
 @api_view(["DELETE"])
