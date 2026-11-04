@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import timedelta
 
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -8,7 +9,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from attendance.utils import EMPTY, active_staff, build_day_map, company_records, day_row, day_status, parse_day, parse_range
+from attendance.utils import EMPTY, active_staff, build_day_map, company_records, day_row, day_status, get_approved_leaves_map, parse_day, parse_range
 from authentication.models import Staff
 from authentication.utils import company_or_error, is_management_user
 
@@ -40,6 +41,24 @@ def add_attendance(request):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+    # Cooldown guard: reject same attendance_type within the cooldown window
+    employee = serializer.validated_data["employee"]
+    att_type = serializer.validated_data["attendance_type"]
+    timestamp = serializer.validated_data.get("timestamp") or timezone.now()
+    cooldown_seconds = getattr(settings, "ATTENDANCE_COOLDOWN_SECONDS", 300)
+    cooldown_delta = timedelta(seconds=cooldown_seconds)
+    recent = Attendance.objects.filter(
+        company=company,
+        employee=employee,
+        attendance_type=att_type,
+        timestamp__range=(timestamp - cooldown_delta, timestamp + cooldown_delta),
+    ).exists()
+    if recent:
+        return Response(
+            {"message": f"Duplicate {att_type}: an identical record already exists within the cooldown window."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     attendance = serializer.save(company=company)
     return Response(AttendanceSerializer(attendance).data, status=status.HTTP_201_CREATED)
 
@@ -58,8 +77,23 @@ def view_attendance(request):
     )
 
     params = request.query_params
-    if params.get("employee_id"):
-        qs = qs.filter(employee_id=params["employee_id"])
+    if not is_management_user(request.user):
+        staff = getattr(request.user, "staff", None)
+        requested_emp_id = params.get("employee_id")
+        if requested_emp_id:
+            try:
+                if int(requested_emp_id) != staff.id:
+                    return Response(
+                        {"message": "Permission denied. You can only view your own attendance records."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+            except (ValueError, TypeError):
+                return _bad("Invalid employee_id.")
+        qs = qs.filter(employee=staff)
+    else:
+        if params.get("employee_id"):
+            qs = qs.filter(employee_id=params["employee_id"])
+
     if params.get("device_id"):
         qs = qs.filter(device_id=params["device_id"])
     if params.get("attendance_type"):
@@ -80,6 +114,15 @@ def single_view_attendance(request, id):
         return err
 
     attendance = get_object_or_404(Attendance, id=id, company=company)
+
+    if not is_management_user(request.user):
+        staff = getattr(request.user, "staff", None)
+        if attendance.employee_id != staff.id:
+            return Response(
+                {"message": "Permission denied. You can only view your own attendance records."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
     return Response(AttendanceSerializer(attendance).data)
 
 
@@ -128,32 +171,54 @@ def attendance_summary(request):
     if err:
         return err
 
+    if not is_management_user(request.user):
+        return Response(
+            {"message": "Permission denied. Management access required."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     department = request.query_params.get("department")
     try:
         start, end = parse_range(request.query_params)
     except ValueError as e:
         return _bad(str(e))
 
+    from datetime import timedelta as _td
+
     days = (end - start).days + 1
     staff = list(active_staff(company, department).values("id", "department"))
     dept_of = {s["id"]: s["department"] or "Unassigned" for s in staff}
+    staff_ids = set(dept_of.keys())
 
     records = company_records(company, start, end, department, active_only=True)
     day_map = build_day_map(records)
+    leave_map = get_approved_leaves_map(company, start, end)
 
-    totals = {"present": 0, "late": 0}
-    by_dept = defaultdict(lambda: {"present": 0, "late": 0, "absent": 0})
+    on_time_n = late_n = on_leave_n = 0
+    by_dept = defaultdict(lambda: {"present": 0, "late": 0, "absent": 0, "on_leave": 0})
 
-    for (emp_id, day), v in day_map.items():
-        s = day_status(v["first_in"], day)
-        if s == "absent":          # check-out only, no check-in
-            continue
-        totals["on_time" if s == "present" else "late"] = totals.get(
-            "on_time" if s == "present" else "late", 0) + 1
-        by_dept[dept_of.get(emp_id, "Unassigned")][s] += 1
+    # Iterate every (employee, date) combination
+    current = start
+    while current <= end:
+        for emp_id in staff_ids:
+            v = day_map.get((emp_id, current), EMPTY)
+            leave_info = leave_map.get((emp_id, current))
+            s = day_status(v["first_in"], current, leave_info=leave_info)
+            dept = dept_of.get(emp_id, "Unassigned")
+            if s == "present":
+                on_time_n += 1
+                by_dept[dept]["present"] += 1
+            elif s == "late":
+                late_n += 1
+                by_dept[dept]["late"] += 1
+            elif s in ("on_leave", "half_day_leave"):
+                on_leave_n += 1
+                by_dept[dept]["on_leave"] = by_dept[dept].get("on_leave", 0) + 1
+            else:  # absent
+                by_dept[dept]["absent"] += 1
+        current += _td(days=1)
 
-    on_time, late = totals.get("on_time", 0), totals["late"]
-    present = on_time + late
+    present = on_time_n + late_n
     expected = len(staff) * days
 
     dept_staff_count = defaultdict(int)
@@ -168,16 +233,18 @@ def attendance_summary(request):
             "employees": count,
             "present": attended,
             "late": c["late"],
-            "absent": max(count * days - attended, 0),
+            "on_leave": c.get("on_leave", 0),
+            "absent": max(count * days - attended - c.get("on_leave", 0), 0),
         })
 
     return Response({
         "from": start, "to": end, "days": days,
         "total_employees": len(staff),
         "present": present,            # includes late
-        "on_time": on_time,
-        "late": late,
-        "absent": max(expected - present, 0),
+        "on_time": on_time_n,
+        "late": late_n,
+        "on_leave": on_leave_n,
+        "absent": max(expected - present - on_leave_n, 0),
         "total_check_ins": records.filter(attendance_type="check_in").count(),
         "total_check_outs": records.filter(attendance_type="check_out").count(),
         "by_department": sorted(departments, key=lambda d: d["department"]),
@@ -193,6 +260,15 @@ def employee_attendance_report(request, id):
         return err
 
     employee = get_object_or_404(Staff, id=id, company=company)  # inactive staff allowed
+
+    if not is_management_user(request.user):
+        staff = getattr(request.user, "staff", None)
+        if employee.id != staff.id:
+            return Response(
+                {"message": "Permission denied. You can only view your own attendance report."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
     try:
         start, end = parse_range(request.query_params, default_days=30)
     except ValueError as e:
@@ -232,6 +308,12 @@ def daily_attendance_report(request):
     company, err = company_or_error(request)
     if err:
         return err
+
+    if not is_management_user(request.user):
+        return Response(
+            {"message": "Permission denied. Management access required."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     params = request.query_params
     department = params.get("department")

@@ -23,4 +23,6 @@ urlpatterns = [
     path('device/', include('devices.urls')),
     path('attendance/', include('attendance.urls')),
     path("face/", include("face_data.urls")),
+    path("leave/", include("leave_management.urls")),
+    path("leave_management/", include("leave_management.urls")),
 ]

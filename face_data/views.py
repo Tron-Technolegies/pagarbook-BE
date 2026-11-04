@@ -8,7 +8,7 @@ from .models import FaceData
 from .serializers import FaceDataSerializer
 
 
-api_view(["POST"])
+@api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def register_face_embedding(request):
     company, err = company_or_error(request)

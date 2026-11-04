@@ -1,3 +1,5 @@
+import math
+from django.conf import settings
 from rest_framework import serializers
 
 from authentication.models import Staff
@@ -24,6 +26,16 @@ class FaceDataSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def validate_embedding(self, value):
+        if not value or not isinstance(value, list):
+            raise serializers.ValidationError("Embedding must be a non-empty list.")
+        if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in value):
+            raise serializers.ValidationError("Embedding contains invalid numbers.")
+        dim = getattr(settings, "FACE_EMBEDDING_DIM", None)
+        if dim and len(value) != dim:
+            raise serializers.ValidationError(f"Embedding must have {dim} values.")
+        return value
 
     def validate(self, data):
         user = self.context["request"].user

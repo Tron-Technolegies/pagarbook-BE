@@ -22,7 +22,7 @@ def add_device(request):
     if not is_management_user(request.user):
         return Response({"message": "Permission denied. Management access required."}, status=403)
 
-    serializer = DeviceSerializer(data=request.data)
+    serializer = DeviceSerializer(data=request.data, context={"company": company})
     if not serializer.is_valid():
         return validation_error(serializer)
 
@@ -87,7 +87,7 @@ def update_device(request, id):
     if device is None:
         return Response({"message": "Device not found"}, status=404)
 
-    serializer = DeviceSerializer(device, data=request.data, partial=True)
+    serializer = DeviceSerializer(device, data=request.data, partial=True, context={"company": company})
     if not serializer.is_valid():
         return validation_error(serializer)
 

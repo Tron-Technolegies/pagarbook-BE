@@ -29,6 +29,10 @@ class DeviceSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Device ID cannot be changed after registration")
             return value
 
-        if Device.objects.filter(device_id__iexact=value).exists():
-            raise serializers.ValidationError("Device ID already registered")
+        company = self.context.get("company")
+        qs = Device.objects.filter(device_id__iexact=value)
+        if company:
+            qs = qs.filter(company=company)
+        if qs.exists():
+            raise serializers.ValidationError("Device ID already registered for this company")
         return value

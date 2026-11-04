@@ -13,7 +13,7 @@ class Device(models.Model):
 
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="devices")
     name = models.CharField(max_length=255)
-    device_id = models.CharField(max_length=100, unique=True)  # id the Flutter app reports
+    device_id = models.CharField(max_length=100)  # id the Flutter app reports (unique per company)
     location = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
@@ -27,6 +27,12 @@ class Device(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "device_id"],
+                name="unique_device_id_per_company",
+            )
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.device_id})"

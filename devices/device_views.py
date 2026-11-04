@@ -30,11 +30,24 @@ class DeviceAuthThrottle(AnonRateThrottle):
 def device_auth(request):
     device_id = request.data.get("device_id")
     device_key = request.data.get("device_key")
+    # company_id narrows the lookup to a single tenant when two companies
+    # share the same device_id (supported after migration 0003).
+    # Clients that omit company_id continue to work as before (first-match
+    # fallback) until all kiosk apps are updated.
+    company_id = request.data.get("company_id")
 
     if not device_id or not device_key:
         return Response({"message": "device_id and device_key are required"}, status=400)
 
-    device = Device.objects.select_related("company").filter(device_id=device_id).first()
+    qs = Device.objects.select_related("company").filter(device_id=device_id)
+    if company_id is not None:
+        try:
+            company_id = int(company_id)
+        except (TypeError, ValueError):
+            return Response({"message": "Invalid company_id"}, status=400)
+        qs = qs.filter(company_id=company_id)
+
+    device = qs.first()
 
     # Same response for "no such device" and "wrong key" so device IDs can't be enumerated
     if device is None or not device.check_key(device_key):
